@@ -40,12 +40,16 @@ export function validateQueries(queries) {
   return queries;
 }
 
-// Reads Claude Code stream-json output. A run only counts when the init event
-// lists the skill, so a skill that failed to load is an error and not a miss.
+// Reads Claude Code stream-json output. A run only counts when the skill was
+// listed and the session finished, so a failed model call is an error and not
+// a miss. A one-turn run that calls any skill ends in error_max_turns, which is
+// the expected ending. Other failures can report subtype "success" with
+// is_error set, so the subtype alone is not enough.
 export function detectClaudeTrigger(output, skillName) {
   let listed = false;
   let model = null;
-  let triggered = false;
+  let result = null;
+  const invoked = [];
   for (const line of output.split("\n")) {
     if (!line.trim()) continue;
     let event;
@@ -60,13 +64,21 @@ export function detectClaudeTrigger(output, skillName) {
     }
     if (event.type === "assistant") {
       for (const block of event.message?.content ?? []) {
-        if (block.type !== "tool_use" || block.name !== "Skill") continue;
-        const invoked = block.input?.skill ?? "";
-        if (invoked === skillName || invoked.endsWith(`:${skillName}`)) triggered = true;
+        if (block.type === "tool_use" && block.name === "Skill") invoked.push(block.input?.skill ?? "");
       }
     }
+    if (event.type === "result") result = event;
   }
-  return { listed, model, triggered };
+  const triggered = invoked.some((skill) => skill === skillName || skill.endsWith(`:${skillName}`));
+  let failure = null;
+  if (!listed) {
+    failure = "skill was not listed in the session";
+  } else if (!result) {
+    failure = "session ended without a result";
+  } else if (result.is_error && result.subtype !== "error_max_turns") {
+    failure = String(result.result ?? result.errors ?? result.subtype);
+  }
+  return { model, triggered, invoked, failure };
 }
 
 export function summarize(queries, results) {
@@ -138,9 +150,8 @@ function runClaude(prompt, skillDirectory, skillName, model) {
     child.on("close", () => {
       clearTimeout(timer);
       rmSync(workspace, { recursive: true, force: true });
-      const detected = detectClaudeTrigger(output, skillName);
-      if (!failure && !detected.listed) failure = "skill was not listed in the session";
-      resolve({ ...detected, error: failure });
+      const { failure: detectedFailure, ...detected } = detectClaudeTrigger(output, skillName);
+      resolve({ ...detected, error: failure ?? detectedFailure });
     });
   });
 }
@@ -180,7 +191,7 @@ async function main() {
   console.log(formatReport(summary));
   if (values.out) {
     const models = [...new Set(results.map((result) => result.model).filter(Boolean))];
-    writeFileSync(values.out, `${JSON.stringify({ agent: "claude-code", models, runs, ...summary }, null, 2)}\n`);
+    writeFileSync(values.out, `${JSON.stringify({ agent: "claude-code", models, runs, ...summary, results }, null, 2)}\n`);
   }
   if (results.some((result) => result.error)) process.exitCode = 1;
 }

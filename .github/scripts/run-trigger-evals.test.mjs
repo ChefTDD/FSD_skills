@@ -32,7 +32,29 @@ test("a call to another skill is not a trigger", () => {
 });
 
 test("reports when the skill was not available to the session", () => {
-  assert.equal(detectClaudeTrigger(init(["debug"]), SKILL).listed, false);
+  assert.match(detectClaudeTrigger(init(["debug"]), SKILL).failure, /not listed/);
+});
+
+test("a failed model call is an error and not a miss", () => {
+  const failed = JSON.stringify({ type: "result", subtype: "success", is_error: true, result: "bad model" });
+  const detected = detectClaudeTrigger(`${init([SKILL])}\n${failed}`, SKILL);
+  assert.equal(detected.failure, "bad model");
+});
+
+test("a session with no result is an error", () => {
+  assert.match(detectClaudeTrigger(init([SKILL]), SKILL).failure, /without a result/);
+});
+
+test("a plain answer is a valid run that did not trigger", () => {
+  const done = JSON.stringify({ type: "result", subtype: "success", is_error: false });
+  const detected = detectClaudeTrigger(`${init([SKILL])}\n${done}`, SKILL);
+  assert.deepEqual([detected.triggered, detected.failure], [false, null]);
+});
+
+test("the one-turn limit after a skill call is a valid run", () => {
+  const limit = JSON.stringify({ type: "result", subtype: "error_max_turns", is_error: true });
+  const detected = detectClaudeTrigger(`${init([SKILL])}\n${skillCall("debug")}\n${limit}`, SKILL);
+  assert.deepEqual([detected.triggered, detected.invoked, detected.failure], [false, ["debug"], null]);
 });
 
 test("errored runs do not count as misses", () => {
