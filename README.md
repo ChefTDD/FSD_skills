@@ -113,13 +113,14 @@ See `feature-sliced-design/evals/README.md` for manual grading and adding cases.
 
 ### Running the trigger evals
 
-Trigger queries are defined in `feature-sliced-design/evals/trigger-evals.json`. They measure whether an agent invokes the skill, not whether its answer is right. With Claude Code installed, run from the repository root:
+Trigger queries are defined in `feature-sliced-design/evals/trigger-evals.json`. They measure whether an agent uses the skill, not whether its answer is right. With the agent's CLI installed and signed in, run from the repository root:
 
 ```bash
-node .github/scripts/run-trigger-evals.mjs --model <model> --runs 3
+node .github/scripts/run-trigger-evals.mjs --agent claude --model <model> --runs 3
+node .github/scripts/run-trigger-evals.mjs --agent codex --model <model> --runs 3
 ```
 
-Use `--out <file>` to save the results as JSON. Compare description changes only on the same agent and model.
+Use `--out <file>` to save every run as JSON, and `--only <text>` to run the queries whose id contains that text. Compare description changes only on the same agent and model. CI tests the query file and the log parsing with `node --test .github/scripts/run-trigger-evals.test.mjs`, and does not call a model.
 
 ## References
 

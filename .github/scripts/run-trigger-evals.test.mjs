@@ -2,15 +2,32 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { detectClaudeTrigger, summarize, validateQueries } from "./run-trigger-evals.mjs";
+import {
+  AGENTS,
+  formatReport,
+  opensSkillFile,
+  parseClaude,
+  parseCodex,
+  positiveInteger,
+  summarize,
+  validateQueries,
+} from "./run-trigger-evals.mjs";
 
 const SKILL = "feature-sliced-design";
-const init = (skills) => JSON.stringify({ type: "system", subtype: "init", skills, model: "m" });
-const skillCall = (skill) =>
-  JSON.stringify({
-    type: "assistant",
-    message: { content: [{ type: "tool_use", name: "Skill", input: { skill } }] },
-  });
+const SKILL_FILE = `/tmp/w/.agents/skills/${SKILL}/SKILL.md`;
+const lines = (...events) => events.map((event) => JSON.stringify(event)).join("\n");
+
+const init = (skills = [SKILL]) => ({ type: "system", subtype: "init", skills, model: "m" });
+const tool = (name, input) => ({
+  type: "assistant",
+  message: { content: [{ type: "tool_use", name, input }] },
+});
+const done = { type: "result", subtype: "success", is_error: false };
+const limit = { type: "result", subtype: "error_max_turns", is_error: true };
+
+const started = (type, command) => ({ type: "item.started", item: { type, command } });
+const said = { type: "item.completed", item: { type: "agent_message", text: "I will check" } };
+const finished = { type: "turn.completed" };
 
 test("the shipped query file is valid", () => {
   const url = new URL("../../feature-sliced-design/evals/trigger-evals.json", import.meta.url);
@@ -22,57 +39,93 @@ test("validation rejects a label that contradicts the category", () => {
   assert.throws(() => validateQueries([query]), /contradicts/);
 });
 
-test("detects a call to this skill, with or without a plugin prefix", () => {
-  assert.equal(detectClaudeTrigger(`${init([SKILL])}\n${skillCall(SKILL)}`, SKILL).triggered, true);
-  assert.equal(detectClaudeTrigger(`${init([SKILL])}\n${skillCall(`fsd:${SKILL}`)}`, SKILL).triggered, true);
+test("the trigger rule covers the skill's files and nothing else", () => {
+  assert.equal(opensSkillFile(`cat ${SKILL_FILE}`, SKILL), true);
+  assert.equal(opensSkillFile(`sed -n 1,9p .claude/skills/${SKILL}/references/layer-structure.md`, SKILL), true);
+  assert.equal(opensSkillFile("ls .agents/skills", SKILL), false);
+  assert.equal(opensSkillFile("cat src/SKILL.md", SKILL), false);
+  assert.equal(opensSkillFile(undefined, SKILL), false);
 });
 
-test("reading the skill file counts as a trigger, and other reads do not", () => {
-  const read = (file_path) =>
-    JSON.stringify({
-      type: "assistant",
-      message: { content: [{ type: "tool_use", name: "Read", input: { file_path } }] },
-    });
-  const skillFile = `/tmp/w/.claude/skills/${SKILL}/SKILL.md`;
-  assert.equal(detectClaudeTrigger(`${init([SKILL])}\n${read(skillFile)}`, SKILL).triggered, true);
-  assert.equal(detectClaudeTrigger(`${init([SKILL])}\n${read("/tmp/w/src/a.ts")}`, SKILL).triggered, false);
+test("every agent has an adapter that needs only a prompt and a model", () => {
+  for (const agent of Object.values(AGENTS)) {
+    const [command, args] = agent.command("the prompt", "the model");
+    assert.equal(typeof command, "string");
+    assert.ok(args.includes("the prompt") && args.includes("the model"));
+  }
 });
 
-test("a call to another skill is not a trigger", () => {
-  assert.equal(detectClaudeTrigger(`${init([SKILL])}\n${skillCall("debug")}`, SKILL).triggered, false);
+test("claude, a call to this skill triggers, with or without a plugin prefix", () => {
+  assert.equal(parseClaude(lines(init(), tool("Skill", { skill: SKILL }), limit), SKILL).triggered, true);
+  assert.equal(parseClaude(lines(init(), tool("Skill", { skill: `fsd:${SKILL}` }), limit), SKILL).triggered, true);
 });
 
-test("reports when the skill was not available to the session", () => {
-  assert.match(detectClaudeTrigger(init(["debug"]), SKILL).failure, /not listed/);
+test("claude, reading the skill file triggers, by Read or by Bash", () => {
+  assert.equal(parseClaude(lines(init(), tool("Read", { file_path: SKILL_FILE }), limit), SKILL).triggered, true);
+  assert.equal(parseClaude(lines(init(), tool("Bash", { command: `cat ${SKILL_FILE}` }), limit), SKILL).triggered, true);
 });
 
-test("a failed model call is an error and not a miss", () => {
-  const failed = JSON.stringify({ type: "result", subtype: "success", is_error: true, result: "bad model" });
-  const detected = detectClaudeTrigger(`${init([SKILL])}\n${failed}`, SKILL);
-  assert.equal(detected.failure, "bad model");
+test("claude, another skill or an unrelated command does not trigger but is a valid run", () => {
+  const other = parseClaude(lines(init(), tool("Skill", { skill: "debug" }), limit), SKILL);
+  assert.deepEqual([other.triggered, other.actions, other.failure], [false, ["Skill debug"], null]);
+  const bash = parseClaude(lines(init(), tool("Bash", { command: "ls" }), limit), SKILL);
+  assert.deepEqual([bash.triggered, bash.failure], [false, null]);
 });
 
-test("a session with no result is an error", () => {
-  assert.match(detectClaudeTrigger(init([SKILL]), SKILL).failure, /without a result/);
+test("claude, a plain answer is a valid run that did not trigger", () => {
+  const parsed = parseClaude(lines(init(), done), SKILL);
+  assert.deepEqual([parsed.triggered, parsed.failure], [false, null]);
 });
 
-test("a plain answer is a valid run that did not trigger", () => {
-  const done = JSON.stringify({ type: "result", subtype: "success", is_error: false });
-  const detected = detectClaudeTrigger(`${init([SKILL])}\n${done}`, SKILL);
-  assert.deepEqual([detected.triggered, detected.failure], [false, null]);
+test("claude, failed sessions are errors and not misses", () => {
+  const failed = { type: "result", subtype: "success", is_error: true, result: "bad model" };
+  assert.equal(parseClaude(lines(init(), failed), SKILL).failure, "bad model");
+  assert.match(parseClaude(lines(init()), SKILL).failure, /without a result/);
+  assert.match(parseClaude(lines(init(["debug"]), done), SKILL).failure, /not listed/);
 });
 
-test("the one-turn limit after a skill call is a valid run", () => {
-  const limit = JSON.stringify({ type: "result", subtype: "error_max_turns", is_error: true });
-  const detected = detectClaudeTrigger(`${init([SKILL])}\n${skillCall("debug")}\n${limit}`, SKILL);
-  assert.deepEqual([detected.triggered, detected.invoked, detected.failure], [false, ["debug"], null]);
+test("codex, a first command that opens the skill triggers", () => {
+  const parsed = parseCodex(lines(said, started("command_execution", `/bin/bash -lc 'cat ${SKILL_FILE}'`)), SKILL);
+  assert.deepEqual([parsed.triggered, parsed.failure], [true, null]);
 });
 
-test("errored runs do not count as misses", () => {
+test("codex, another first action does not trigger but is a valid run", () => {
+  const parsed = parseCodex(lines(said, started("command_execution", "/bin/bash -lc 'ls'")), SKILL);
+  assert.deepEqual([parsed.triggered, parsed.actions, parsed.failure], [false, ["command_execution"], null]);
+  assert.equal(parseCodex(lines(started("web_search")), SKILL).triggered, false);
+});
+
+test("codex, a plain answer is a valid run that did not trigger", () => {
+  const parsed = parseCodex(lines(said, finished), SKILL);
+  assert.deepEqual([parsed.triggered, parsed.failure], [false, null]);
+});
+
+test("codex, failed sessions are errors and not misses", () => {
+  const warning = { type: "item.completed", item: { type: "error", message: "fallback metadata" } };
+  const failed = { type: "turn.failed", error: { message: "bad model" } };
+  assert.equal(parseCodex(lines(warning, failed), SKILL).failure, "bad model");
+  assert.equal(AGENTS.codex.decided(warning), false);
+  assert.match(parseCodex(lines(said), SKILL).failure, /without a result/);
+});
+
+test("the codex adapter stops at the first action and not at a message", () => {
+  assert.equal(AGENTS.codex.decided(said), false);
+  assert.equal(AGENTS.codex.decided(started("command_execution", "ls")), true);
+});
+
+test("errored runs do not count as misses, and the report names the error", () => {
   const query = { id: "a", language: "en", category: "explicit", query: "q", should_trigger: true };
-  const { rows } = summarize([query], [
+  const results = [
     { id: "a", triggered: true, error: null },
     { id: "a", triggered: false, error: "timed out" },
-  ]);
-  assert.deepEqual([rows[0].hits, rows[0].runs, rows[0].errors, rows[0].ok], [1, 1, 1, true]);
+  ];
+  const summary = summarize([query], results);
+  const row = summary.rows[0];
+  assert.deepEqual([row.hits, row.runs, row.errors, row.ok], [1, 1, 1, true]);
+  assert.match(formatReport(summary, results), /timed out/);
+});
+
+test("run counts must be positive whole numbers", () => {
+  assert.equal(positiveInteger("3", "runs"), 3);
+  for (const bad of ["abc", "0", "-1", "1.5", ""]) assert.throws(() => positiveInteger(bad, "runs"));
 });

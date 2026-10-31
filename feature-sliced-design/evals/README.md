@@ -67,10 +67,19 @@ Each query has one of three categories.
 | `unrelated` | shares terms with FSD but is about something else | no |
 
 See "Running the trigger evals" in the root `README.md` for the command.
-Trigger rates vary between runs, so run each query several times and treat a
-rate as a measurement rather than a pass or fail. The runner supports Claude
-Code so far. It gives the agent only the Skill tool and one turn, which records
-the first decision but is not the same as a full session with all tools.
+
+The queries, the scoring and the trigger rule are shared across agents, and each
+agent has a small adapter that starts a session and reads its log. Claude Code
+and Codex are supported. A run counts as a trigger when the agent calls the skill
+or opens `SKILL.md` or a reference, whichever tool it uses. A session that fails
+is an error and not a miss.
+
+Each run installs the skill with the `skills` CLI into an empty folder, gives the
+agent its normal tools, and stops at the agent's first action. An agent that
+explores first and would reach the skill later counts as a miss. Trigger rates
+vary between runs, so run each query several times and treat a rate as a
+measurement rather than a pass or fail. Rates only compare within one agent and
+model.
 
 ## Adding a case
 
