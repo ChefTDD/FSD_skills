@@ -51,6 +51,27 @@ the right reference files. Check that separately by hand.
 Start a fresh session per case. A previous answer in the same conversation
 will steer the next one.
 
+## Trigger evaluations
+
+`trigger-evals.json` lists queries and whether the skill should be invoked for
+them. It answers a different question from `evals.json`. It only checks that
+the skill was invoked, not which references were read or whether the answer
+was right.
+
+Each query has one of three categories.
+
+| Category | Meaning | Should trigger |
+| --- | --- | --- |
+| `explicit` | names FSD or Feature-Sliced Design | yes |
+| `context` | shows FSD layers or paths without naming FSD | yes |
+| `unrelated` | shares terms with FSD but is about something else | no |
+
+See "Running the trigger evals" in the root `README.md` for the command.
+Trigger rates vary between runs, so run each query several times and treat a
+rate as a measurement rather than a pass or fail. The runner supports Claude
+Code so far. It gives the agent only the Skill tool and one turn, which records
+the first decision but is not the same as a full session with all tools.
+
 ## Adding a case
 
 Add an object to `evals` with all seven fields:

@@ -46,6 +46,10 @@ jobs:
       - name: Test the validator
         run: node --test .github/scripts/validate-skills.test.mjs
 
+      # Trigger evals need a model, so CI only checks the query file and detection.
+      - name: Test the trigger eval runner
+        run: node --test .github/scripts/run-trigger-evals.test.mjs
+
       # Verify that each skill can be installed through the official CLI.
       - name: Test skill install
         run: |

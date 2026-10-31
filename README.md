@@ -71,6 +71,7 @@ feature-sliced-design/
   evals/
     README.md                      How to grade and maintain the cases
     evals.json                     Placement regression cases
+    trigger-evals.json             Skill invocation queries
 ```
 
 `SKILL.md` is the entry point. It tells the agent to read a reference file only when the task calls for it, so the initial context stays small.
@@ -109,6 +110,16 @@ npx agent-skills-eval . --target <model> --judge <model> --baseline
 ```
 
 See `feature-sliced-design/evals/README.md` for manual grading and adding cases.
+
+### Running the trigger evals
+
+Trigger queries are defined in `feature-sliced-design/evals/trigger-evals.json`. They measure whether an agent invokes the skill, not whether its answer is right. With Claude Code installed, run from the repository root:
+
+```bash
+node .github/scripts/run-trigger-evals.mjs --model <model> --runs 3
+```
+
+Use `--out <file>` to save the results as JSON. Compare description changes only on the same agent and model.
 
 ## References
 
