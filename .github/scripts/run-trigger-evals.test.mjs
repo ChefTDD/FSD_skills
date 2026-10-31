@@ -27,6 +27,17 @@ test("detects a call to this skill, with or without a plugin prefix", () => {
   assert.equal(detectClaudeTrigger(`${init([SKILL])}\n${skillCall(`fsd:${SKILL}`)}`, SKILL).triggered, true);
 });
 
+test("reading the skill file counts as a trigger, and other reads do not", () => {
+  const read = (file_path) =>
+    JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "tool_use", name: "Read", input: { file_path } }] },
+    });
+  const skillFile = `/tmp/w/.claude/skills/${SKILL}/SKILL.md`;
+  assert.equal(detectClaudeTrigger(`${init([SKILL])}\n${read(skillFile)}`, SKILL).triggered, true);
+  assert.equal(detectClaudeTrigger(`${init([SKILL])}\n${read("/tmp/w/src/a.ts")}`, SKILL).triggered, false);
+});
+
 test("a call to another skill is not a trigger", () => {
   assert.equal(detectClaudeTrigger(`${init([SKILL])}\n${skillCall("debug")}`, SKILL).triggered, false);
 });

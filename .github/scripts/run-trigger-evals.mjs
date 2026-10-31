@@ -50,6 +50,8 @@ export function detectClaudeTrigger(output, skillName) {
   let model = null;
   let result = null;
   const invoked = [];
+  const tools = [];
+  let readSkill = false;
   for (const line of output.split("\n")) {
     if (!line.trim()) continue;
     let event;
@@ -64,12 +66,15 @@ export function detectClaudeTrigger(output, skillName) {
     }
     if (event.type === "assistant") {
       for (const block of event.message?.content ?? []) {
-        if (block.type === "tool_use" && block.name === "Skill") invoked.push(block.input?.skill ?? "");
+        if (block.type !== "tool_use") continue;
+        tools.push(block.name);
+        if (block.name === "Skill") invoked.push(block.input?.skill ?? "");
+        if (block.name === "Read" && block.input?.file_path?.includes(`skills/${skillName}/`)) readSkill = true;
       }
     }
     if (event.type === "result") result = event;
   }
-  const triggered = invoked.some((skill) => skill === skillName || skill.endsWith(`:${skillName}`));
+  const triggered = readSkill || invoked.some((skill) => skill === skillName || skill.endsWith(`:${skillName}`));
   let failure = null;
   if (!listed) {
     failure = "skill was not listed in the session";
@@ -78,7 +83,7 @@ export function detectClaudeTrigger(output, skillName) {
   } else if (result.is_error && result.subtype !== "error_max_turns") {
     failure = String(result.result ?? result.errors ?? result.subtype);
   }
-  return { model, triggered, invoked, failure };
+  return { model, triggered, invoked, tools, failure };
 }
 
 export function summarize(queries, results) {
@@ -114,15 +119,18 @@ export function formatReport({ rows }) {
   return lines.join("\n");
 }
 
-function runClaude(prompt, skillDirectory, skillName, model) {
+function runClaude(prompt, skillDirectory, skillName, model, allTools) {
   const workspace = mkdtempSync(path.join(tmpdir(), "trigger-eval-"));
   const target = path.join(workspace, ".claude", "skills", skillName);
   mkdirSync(target, { recursive: true });
   cpSync(path.join(skillDirectory, "SKILL.md"), path.join(target, "SKILL.md"));
   cpSync(path.join(skillDirectory, "references"), path.join(target, "references"), { recursive: true });
 
-  // One turn with only the Skill tool records the first decision and cannot
-  // touch files. User settings stay out so other skills cannot compete.
+  // One turn records the first decision. User settings stay out so the user's
+  // own skills and permissions do not change the result, though built-in skills
+  // are still listed and can compete. By default only the Skill tool is offered.
+  // With --all-tools the normal tools are offered, and with no user permissions
+  // a tool that needs approval is refused rather than run.
   const args = [
     "-p", prompt,
     "--model", model,
@@ -131,8 +139,7 @@ function runClaude(prompt, skillDirectory, skillName, model) {
     "--setting-sources", "project",
     "--strict-mcp-config",
     "--no-session-persistence",
-    "--tools", "Skill",
-    "--allowedTools", "Skill",
+    ...(allTools ? [] : ["--tools", "Skill", "--allowedTools", "Skill"]),
     "--max-turns", "1",
   ];
 
@@ -164,6 +171,7 @@ async function main() {
       runs: { type: "string", default: "3" },
       concurrency: { type: "string", default: "3" },
       out: { type: "string" },
+      "all-tools": { type: "boolean", default: false },
     },
   });
   if (!values.model) throw new Error("--model is required, because rates only compare within one model");
@@ -179,7 +187,7 @@ async function main() {
   const worker = async () => {
     while (next < jobs.length) {
       const query = jobs[next++];
-      const run = await runClaude(query.query, skillDirectory, values.skill, values.model);
+      const run = await runClaude(query.query, skillDirectory, values.skill, values.model, values["all-tools"]);
       results.push({ id: query.id, ...run });
       process.stderr.write(`\r${results.length}/${jobs.length} runs`);
     }
@@ -191,7 +199,7 @@ async function main() {
   console.log(formatReport(summary));
   if (values.out) {
     const models = [...new Set(results.map((result) => result.model).filter(Boolean))];
-    writeFileSync(values.out, `${JSON.stringify({ agent: "claude-code", models, runs, ...summary, results }, null, 2)}\n`);
+    writeFileSync(values.out, `${JSON.stringify({ agent: "claude-code", models, runs, allTools: values["all-tools"], ...summary, results }, null, 2)}\n`);
   }
   if (results.some((result) => result.error)) process.exitCode = 1;
 }
